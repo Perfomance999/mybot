@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import json
-import re
+import base64
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
@@ -11,11 +11,11 @@ from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 OPERATOR_PASS = "oper123"
 OBRAB_PASS = "obrab456"
 SECRET_WORD = "getlinks"
 SESSIONS_FILE = "sessions.json"
-OCR_API_KEY = os.getenv("OCR_API_KEY", "K82465476388957")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,37 +71,50 @@ def register(user_id, role):
     return label
 
 
-def find_amounts(text):
-    patterns = [
-        r'(?:итого|total|сумма|amount|к оплате|к выдаче|выдать|итог|TOTAL|SUBTOTAL|MONTO|PAGAR|COBRAR)[^\d]{0,10}(\d{1,3}(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?)',
-        r'\b\d{1,3}(?:[.,\s]\d{3})*[.,]\d{2}\b',
-        r'\b\d{4,}\b',
-    ]
-    found = []
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        for m in matches:
-            val = m.strip() if isinstance(m, str) else m
-            if val and val not in found:
-                found.append(val)
-    return found
-
-
-async def ocr_photo(file_url):
-    async with aiohttp.ClientSession() as session:
-        data = aiohttp.FormData()
-        data.add_field("url", file_url)
-        data.add_field("apikey", OCR_API_KEY)
-        data.add_field("language", "spa")
-        data.add_field("isOverlayRequired", "false")
-        async with session.post("https://api.ocr.space/parse/image", data=data) as resp:
-            result = await resp.json()
-            if result.get("IsErroredOnProcessing"):
-                return None
-            parsed = result.get("ParsedResults", [])
-            if parsed:
-                return parsed[0].get("ParsedText", "")
-            return None
+async def get_amount_from_image(image_bytes):
+    try:
+        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+        headers = {
+            "x-api-key": ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_b64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "This is a receipt or payment screenshot. Find the total amount paid. Reply with ONLY the amount and currency, nothing else. Example: $50.00 or 300.000 COP or 1500 RUB. If you cannot find an amount, reply: Not found.",
+                        },
+                    ],
+                }
+            ],
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=payload,
+            ) as resp:
+                result = await resp.json()
+                content = result.get("content", [])
+                if content and content[0].get("type") == "text":
+                    return content[0]["text"].strip()
+    except Exception as e:
+        logger.warning("Claude API error: %s", e)
+    return None
 
 
 @router.message(CommandStart())
@@ -181,15 +194,18 @@ async def relay(message: Message, bot: Bot):
     cap = message.caption or ""
     full = header + "\n" + cap if cap else header
     sent = 0
-    ocr_text = None
+    amount_text = None
 
     if message.photo:
         try:
             file = await bot.get_file(message.photo[-1].file_id)
             file_url = "https://api.telegram.org/file/bot" + BOT_TOKEN + "/" + file.file_path
-            ocr_text = await ocr_photo(file_url)
+            async with aiohttp.ClientSession() as s:
+                async with s.get(file_url) as resp:
+                    image_bytes = await resp.read()
+            amount_text = await get_amount_from_image(image_bytes)
         except Exception as e:
-            logger.warning("OCR error: %s", e)
+            logger.warning("Photo download error: %s", e)
 
     for uid in recipients:
         try:
@@ -212,17 +228,13 @@ async def relay(message: Message, bot: Bot):
         except Exception as e:
             logger.warning("Error: %s", e)
 
-    if ocr_text:
-        amounts = find_amounts(ocr_text)
-        if amounts:
-            result = "Amount on photo: " + ", ".join(amounts)
-        else:
-            result = "Photo scanned. No amount found."
+    if amount_text and amount_text != "Not found":
+        result = "Amount: " + amount_text
         for uid in list(sessions.keys()):
             try:
                 await bot.send_message(uid, result)
             except Exception as e:
-                logger.warning("Error sending OCR: %s", e)
+                logger.warning("Error sending amount: %s", e)
         await message.answer(result)
 
     if sent:
