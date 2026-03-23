@@ -15,7 +15,7 @@ OPERATOR_PASS = "oper123"
 OBRAB_PASS = "obrab456"
 SECRET_WORD = "getlinks"
 SESSIONS_FILE = "sessions.json"
-OCR_API_KEY = "K82465476388957"
+OCR_API_KEY = os.getenv("OCR_API_KEY", "K82465476388957")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
