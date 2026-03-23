@@ -109,6 +109,7 @@ async def get_amount_from_image(image_bytes):
                 json=payload,
             ) as resp:
                 result = await resp.json()
+                logger.info("Claude raw response: %s", result)
                 content = result.get("content", [])
                 if content and content[0].get("type") == "text":
                     return content[0]["text"].strip()
@@ -204,7 +205,7 @@ async def relay(message: Message, bot: Bot):
                 async with s.get(file_url) as resp:
                     image_bytes = await resp.read()
             amount_text = await get_amount_from_image(image_bytes)
-logger.info("Claude response: %s", amount_text)
+            logger.info("Claude response: %s", amount_text)
         except Exception as e:
             logger.warning("Photo download error: %s", e)
 
