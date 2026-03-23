@@ -3,6 +3,8 @@ import logging
 import os
 import json
 import base64
+import time
+import hashlib
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
@@ -69,6 +71,10 @@ def register(user_id, role):
     sessions[user_id] = {"role": role, "label": label}
     save_sessions()
     return label
+
+
+def generate_receipt_id():
+    return "#" + str(int(time.time()))[-6:]
 
 
 async def get_amount_from_image(image_bytes):
@@ -231,7 +237,8 @@ async def relay(message: Message, bot: Bot):
             logger.warning("Error: %s", e)
 
     if amount_text and amount_text != "Not found":
-        result = "Amount: " + amount_text
+        receipt_id = generate_receipt_id()
+        result = receipt_id + " | Amount: " + amount_text
         for uid in list(sessions.keys()):
             try:
                 await bot.send_message(uid, result)
