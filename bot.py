@@ -1,6 +1,9 @@
 import asyncio
-import os
 import logging
+import os
+import json
+import re
+import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
@@ -11,13 +14,37 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8611253814:AAGw7gDgiBwOJelgSOVJGhCT_feFlthDq
 OPERATOR_PASS = "oper123"
 OBRAB_PASS = "obrab456"
 SECRET_WORD = "getlinks"
+SESSIONS_FILE = "sessions.json"
+OCR_API_KEY = "K82465476388957"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-sessions = {}
-counters = {"operator": 0, "obrab": 0}
 router = Router()
+
+
+def load_sessions():
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, "r") as f:
+                data = json.load(f)
+                sessions = {int(k): v for k, v in data.get("sessions", {}).items()}
+                counters = data.get("counters", {"operator": 0, "obrab": 0})
+                return sessions, counters
+        except Exception:
+            pass
+    return {}, {"operator": 0, "obrab": 0}
+
+
+def save_sessions():
+    try:
+        with open(SESSIONS_FILE, "w") as f:
+            json.dump({"sessions": sessions, "counters": counters}, f)
+    except Exception as e:
+        logger.warning("Failed to save sessions: %s", e)
+
+
+sessions, counters = load_sessions()
 
 
 def get_label(user_id):
@@ -40,7 +67,41 @@ def register(user_id, role):
     counters[role] += 1
     label = ("Operator " if role == "operator" else "Obrab ") + str(counters[role])
     sessions[user_id] = {"role": role, "label": label}
+    save_sessions()
     return label
+
+
+def find_amounts(text):
+    patterns = [
+        r'(?:итого|total|сумма|amount|к оплате|к выдаче|выдать|итог|TOTAL|SUBTOTAL|MONTO|PAGAR|COBRAR)[^\d]{0,10}(\d{1,3}(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?)',
+        r'\b\d{1,3}(?:[.,\s]\d{3})*[.,]\d{2}\b',
+        r'\b\d{4,}\b',
+    ]
+    found = []
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        for m in matches:
+            val = m.strip() if isinstance(m, str) else m
+            if val and val not in found:
+                found.append(val)
+    return found
+
+
+async def ocr_photo(file_url):
+    async with aiohttp.ClientSession() as session:
+        data = aiohttp.FormData()
+        data.add_field("url", file_url)
+        data.add_field("apikey", OCR_API_KEY)
+        data.add_field("language", "spa")
+        data.add_field("isOverlayRequired", "false")
+        async with session.post("https://api.ocr.space/parse/image", data=data) as resp:
+            result = await resp.json()
+            if result.get("IsErroredOnProcessing"):
+                return None
+            parsed = result.get("ParsedResults", [])
+            if parsed:
+                return parsed[0].get("ParsedText", "")
+            return None
 
 
 @router.message(CommandStart())
@@ -85,6 +146,7 @@ async def cmd_logout(message: Message):
     if user_id in sessions:
         label = get_label(user_id)
         del sessions[user_id]
+        save_sessions()
         await message.answer("Logged out from " + label)
     else:
         await message.answer("Not logged in.")
@@ -119,6 +181,15 @@ async def relay(message: Message, bot: Bot):
     cap = message.caption or ""
     full = header + "\n" + cap if cap else header
     sent = 0
+    ocr_text = None
+
+    if message.photo:
+        try:
+            file = await bot.get_file(message.photo[-1].file_id)
+            file_url = "https://api.telegram.org/file/bot" + BOT_TOKEN + "/" + file.file_path
+            ocr_text = await ocr_photo(file_url)
+        except Exception as e:
+            logger.warning("OCR error: %s", e)
 
     for uid in recipients:
         try:
@@ -130,10 +201,7 @@ async def relay(message: Message, bot: Bot):
                 await bot.send_animation(uid, message.animation.file_id, caption=full)
             elif message.sticker:
                 await bot.send_message(uid, header)
-                await bot.
-
-
-send_sticker(uid, message.sticker.file_id)
+                await bot.send_sticker(uid, message.sticker.file_id)
             elif message.voice:
                 await bot.send_voice(uid, message.voice.file_id, caption=full)
             elif message.document:
@@ -143,6 +211,19 @@ send_sticker(uid, message.sticker.file_id)
             sent += 1
         except Exception as e:
             logger.warning("Error: %s", e)
+
+    if ocr_text:
+        amounts = find_amounts(ocr_text)
+        if amounts:
+            result = "Amount on photo: " + ", ".join(amounts)
+        else:
+            result = "Photo scanned. No amount found."
+        for uid in list(sessions.keys()):
+            try:
+                await bot.send_message(uid, result)
+            except Exception as e:
+                logger.warning("Error sending OCR: %s", e)
+        await message.answer(result)
 
     if sent:
         await message.answer("Sent.")
@@ -189,8 +270,9 @@ async def main():
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
+    logger.info("Bot started. Sessions loaded: %d", len(sessions))
     await dp.start_polling(bot)
 
 
-if name == "__main__":
+if __name__ == "__main__":
     asyncio.run(main())
