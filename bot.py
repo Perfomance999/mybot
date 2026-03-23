@@ -204,6 +204,7 @@ async def relay(message: Message, bot: Bot):
                 async with s.get(file_url) as resp:
                     image_bytes = await resp.read()
             amount_text = await get_amount_from_image(image_bytes)
+logger.info("Claude response: %s", amount_text)
         except Exception as e:
             logger.warning("Photo download error: %s", e)
 
