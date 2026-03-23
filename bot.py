@@ -10,7 +10,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8611253814:AAGw7gDgiBwOJelgSOVJGhCT_feFlthDqLY")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OPERATOR_PASS = "oper123"
 OBRAB_PASS = "obrab456"
 SECRET_WORD = "getlinks"
