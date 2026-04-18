@@ -4,7 +4,6 @@ import os
 import json
 import base64
 import time
-import hashlib
 import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
@@ -17,6 +16,7 @@ ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 OPERATOR_PASS = "oper123"
 OBRAB_PASS = "obrab456"
 SECRET_WORD = "getlinks"
+CLEAR_WORD = "clearusers"
 SESSIONS_FILE = "sessions.json"
 
 logging.basicConfig(level=logging.INFO)
@@ -189,6 +189,17 @@ async def relay(message: Message, bot: Bot):
         op_link = "https://t.me/" + me.username + "?start=op_" + OPERATOR_PASS
         ob_link = "https://t.me/" + me.username + "?start=ob_" + OBRAB_PASS
         await message.answer("For Operators:\n" + op_link + "\n\nFor Obrabs:\n" + ob_link)
+        return
+
+    if text == CLEAR_WORD:
+        if get_role(sender_id) != "obrab":
+            await message.answer("Access denied.")
+            return
+        sessions.clear()
+        counters["operator"] = 0
+        counters["obrab"] = 0
+        save_sessions()
+        await message.answer("All users cleared.")
         return
 
     recipients = all_users_except(sender_id)
